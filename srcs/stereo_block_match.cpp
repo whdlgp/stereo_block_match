@@ -77,7 +77,7 @@ Mat stereo_block_match(Mat& left_image, Mat& right_image, int half_of_win)
 {
     int window_size = half_of_win*2+1;
     Mat disp = Mat::zeros(left_image.rows, left_image.cols, CV_16SC1);
-    unsigned short* disp_data = (unsigned short*)disp.data;
+    short* disp_data = (short*)disp.data;
 
     if((left_image.type() != CV_8UC1) || (left_image.size() != right_image.size()))
         cout << "only can accept 8 bit grayscale image and same size" << endl;
@@ -87,19 +87,19 @@ Mat stereo_block_match(Mat& left_image, Mat& right_image, int half_of_win)
         int height = left_image.rows;
 
         int start_row = half_of_win, end_row = height - 1 - half_of_win;
-        int start_col = half_of_win, end_col = height - 1 - half_of_win;
+        int start_col = half_of_win, end_col = width - 1 - half_of_win;
         int search_length = width - half_of_win - half_of_win;
-        
-        #pragma omp parallel for collapse(2) 
+
+        #pragma omp parallel for collapse(2)
         for(int i = start_row; i <= end_row; i++)
         {
             for(int j = start_col; j <= end_col; j++)
             {
                 Mat left_win = crop_window(left_image, i, j, half_of_win, window_size);
 
-                vector<float> similarity(search_length);
+                vector<float> similarity(search_length, -1);
                 int simil_idx = 0;
-                for(int right_j = start_col; right_j <= end_col; right_j++)
+                for(int right_j = start_col; right_j <= j; right_j++)
                 {
                     Mat right_win = crop_window(right_image, i, right_j, half_of_win, window_size);
 
@@ -107,9 +107,15 @@ Mat stereo_block_match(Mat& left_image, Mat& right_image, int half_of_win)
 
                     simil_idx++;
                 }
-
-                int min_right_j = start_col + std::max_element(similarity.begin(),similarity.end()) - similarity.begin();
-                disp_data[i*width + j] = j - min_right_j;
+                
+                std::vector<float>::iterator max_simil = std::max_element(similarity.begin(), similarity.end());
+                int min_right_j = start_col + std::distance(similarity.begin(), max_simil);
+                if(*max_simil > 0.5f) //good similarity
+                    disp_data[i*width + j] = j - min_right_j;
+                else if(*max_simil > 0.0f) //bad similarity
+                    disp_data[i*width + j] = -1;
+                else //zero or negative similarity
+                    disp_data[i*width + j] = -2;
             }
         }
 
@@ -150,8 +156,32 @@ int main(int argc, char* argv[])
     cvtColor(right_image, right_gray, CV_BGR2GRAY);
 
     Mat disp = stereo_block_match(left_gray, right_gray, half_of_win);
-    Mat tmp;
-    disp.convertTo(tmp, CV_8UC1);
-    imshow("test", tmp);
-    waitKey(0);
+
+    double minval, maxval;
+    minMaxLoc(disp, &minval, &maxval);
+    cout << "min: " << minval << " max: " << maxval << endl;
+
+    string winname = "test";
+    int thresh = 0;
+    namedWindow(winname);
+    createTrackbar("show threshold", winname, &thresh, 255);
+    setTrackbarPos("show threshold", winname, 0);
+
+    Mat bad_simil = (disp == -1);
+    Mat negative_simil = (disp == -2);
+    while(1)
+    {
+        Mat disp_mask = (disp > 0) & (disp < thresh);
+        Mat disp_plus;
+        disp.copyTo(disp_plus, disp_mask);
+        Mat tmp;
+        normalize(disp_plus, tmp, 0, 255, NORM_MINMAX, CV_8UC1);
+
+        vector<Mat> tmp_arr = {bad_simil, tmp, negative_simil};
+        Mat tmp_merge;
+        merge(tmp_arr, tmp_merge);
+
+        imshow(winname, tmp_merge);
+        waitKey(10);
+    }
 }
